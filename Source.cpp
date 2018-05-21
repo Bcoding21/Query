@@ -1,6 +1,13 @@
+/*
+	Searches for documents that contain user submitted key words using a pre build index and dictionaries.
+	Dictionaries and index are loaded upon execution of the program on separate threads.
+	Two dictionaries are used for mapping terms and documents to unique ids.
+	The index maps a unique term id to a list of unique document ids.
+	All list of document ids is sorted.
+*/
+
 #include <algorithm>
 #include <unordered_map>
-#include <set>
 #include <fstream>
 #include <vector>
 #include <iostream>
@@ -12,104 +19,124 @@
 #include <execution>
 #include <future>
 
-void  readWordIndex(const std::string&, std::promise<std::unordered_map<std::string, unsigned long>>&&);
+/*
+Reads from file to create a dictionary that maps terms to term ids
 
-void  readLinkIndex(const std::string&, std::promise<std::unordered_map<unsigned long, std::string>>&&);
+Paramater 1: String representing path of file to read from
+Paramater 2: Promise that saves the instance of an unordered_map.
+*/
+void  readTermDict(const std::string&, std::promise<std::unordered_map<std::string, unsigned long>>&&);
 
-std::unordered_map<unsigned long, std::vector<unsigned long>> readWordLinkIndex(const std::string&);
+/*
+Reads from file to create a dictionary that maps documents to document ids
 
+Paramater 1: String representing path of file to read from
+Paramater 2: Promise that saves the instance an unordered_map.
+*/
+void  readDocDict(const std::string&, std::promise<std::unordered_map<unsigned long, std::string>>&&);
+
+/*
+Reads from file to create a dictionary that maps term ids to a list of document ids
+
+Paramater 1: String representing path of file to read from
+*/
+std::unordered_map<unsigned long, std::vector<unsigned long>> readIndex(const std::string&);
+
+/*
+	Combines common ids from multiple list into one list
+
+	Param 1 - Vector of vectors that represent multiple list of document ids
+	Returns - vector of document ids
+*/
+std::vector<unsigned long> mergeDocIdList(const std::vector<std::vector<unsigned long>>& docIdLists);
+
+/*
+creates new list of common values from two other list.
+
+Param 1 - vector of unsigned long integers
+Param 2 - vector of unsigned long integers
+Returns - vector of unsigned long integers that occured in both vectors.
+*/
 std::vector<unsigned long> getIntersection(const std::vector<unsigned long>&, const std::vector<unsigned long>&);
 
-std::unordered_map<unsigned long, std::string> reverseIndex(const std::unordered_map<std::string, unsigned long>&);
+/*
+	Transforms all character in a string to lowercase
+
+	Param - String
+*/
+void transformLower(std::string&);
+
+/*
+Retrieves each term's coressponding list of document ids
+Param 1 - Vector of strings representing each term in a query
+Param 2 - Unordered Map that maps a term to a term id
+Param 3 - Unordered Map that maps a term id to a list of document ids
+Returns - Vector of vectors that represent each list of doucment ids
+for each term.
+*/
+std::vector<std::vector<unsigned long>> getDocIdLists(std::vector<std::string> termList,
+	const std::unordered_map<std::string, unsigned long>& termDict,
+	const std::unordered_map<unsigned long, std::vector<unsigned long>>& index);
+
+/*
+returns the terms that form a query in a vector
+
+Param - String that represents a query
+Return - Vector of strings that represent each word in the query
+*/
+std::vector<std::string> getTermList(const std::string& query);
+
+
+void printResults(const std::vector<unsigned long>& results,
+	const std::unordered_map<unsigned long, std::string>& docDict);
 
 int main(char* argc, char* argv[]) {
 
-	std::promise<std::unordered_map<std::string, unsigned long>> p1;
+	// load dictionaries/index on separate threads to increase performance
 
+	std::promise <std::unordered_map<std::string, unsigned long>> p1;
 	std::promise <std::unordered_map<unsigned long, std::string>> p2;
 
 	auto f1 = p1.get_future();
-
 	auto f2 = p2.get_future();
 
-	std::thread t1(&readWordIndex, "wordIndex.bin", std::move(p1));
+	std::thread t1(&readTermDict, "termDict.bin", std::move(p1));
+	std::thread t2(&readDocDict, "docDict.bin", std::move(p2)); 
 
-	std::thread t2(&readLinkIndex, "docIndex.bin", std::move(p2));
-
-	auto wordDocIndex = readWordLinkIndex("wordDocIndex.bin");
+	auto index = readIndex("index.bin");
 
 	t1.join();
 	t2.join();
 
-	auto wordIndex = f1.get();
+	auto termDict = f1.get();
+	auto docDict = f2.get();
 
-	auto docIndex = f2.get();
-	
 	std::string query = "stanford education";
+	//std::cout << "Enter query here: ";
+	//std::getline(std::cin, query);
+	
+	transformLower(query);
+	auto termList = getTermList(query);
+	auto docIdLists = getDocIdLists(termList, termDict, index);
+	auto results = mergeDocIdList(docIdLists);
 
-	//while (true) {
 
-		/*std::cout << "Enter query here: ";
-		std::getline(std::cin, query);*/
-
-		std::transform ( // query make lower case
-			query.begin(), query.end(),
-			query.begin(), [](char letter)
-			{ return tolower(letter); });
-
-		std::istringstream ss(query);
-		std::istream_iterator<std::string> start(ss), end;
-		std::vector<std::string> words(start, end); // separate into words
-
-		auto wordSearch = wordIndex.find(words[0]);
-
-		if (wordSearch == wordIndex.end()) {
-			std::cout << words[0] << " not in any docs\n\n";
-			//continue;
-		}
-
-		auto searchResults = wordDocIndex[wordSearch->second];
-
-		for (int i = 1; i < words.size(); ++i) {
-
-			auto wordID = wordIndex.find(words[i])->second;
-
-			auto linkIDs = wordDocIndex.find(wordID)->second;
-
-			searchResults = getIntersection(searchResults, linkIDs);
-
-		}
-		if (searchResults.empty()) {
-			std::cout << "No results\n\n";
-			//continue;
-		}
-
-		std::transform( // PRINT
-			searchResults.begin(), searchResults.end(),
-			std::ostream_iterator<std::string>(std::cout, "\n"),
-			[&docIndex](unsigned long docID) {
-			return docIndex[docID]; }
-		);
-
-		std::cout << '\n';
-	//}
-
-		std::cin.ignore();
+	std::cin.ignore();
 }
 
-void readWordIndex(const std::string& filePath,
-	std::promise<std::unordered_map<std::string, unsigned long>>&& p) {
+void readTermDict(const std::string& path,
+	std::promise< std::unordered_map<std::string, unsigned long>>&& promise) {
 
-	std::ifstream in(filePath, std::ifstream::binary);
+	std::ifstream file(path, std::ifstream::binary);
 
-	if (!in) {
-		 p.set_value(std::unordered_map<std::string, unsigned long>());
+	if (!file) {
+		 promise.set_value(std::unordered_map<std::string, unsigned long>());
 		 return;
 	}
 
 	unsigned int indexSize = 0;
 
-	in.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
+	file.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
 
 	std::unordered_map<std::string, unsigned long> index;
 
@@ -117,40 +144,40 @@ void readWordIndex(const std::string& filePath,
 
 	for (int i = 0; i < indexSize; i++) {
 
-		unsigned long ID = 0;
+		unsigned long termId = 0;
 
-		in.read(reinterpret_cast<char*>(&ID), sizeof(ID));
+		file.read(reinterpret_cast<char*>(&termId), sizeof(termId));
 
 		short stringSize = 0;
 
-		in.read(reinterpret_cast<char*>(&stringSize), sizeof(stringSize));
+		file.read(reinterpret_cast<char*>(&stringSize), sizeof(stringSize));
 
 		char* cString = new char[stringSize];
 
-		in.read(cString, stringSize);
+		file.read(cString, stringSize);
 
-		std::string str(cString, stringSize);
+		std::string term(cString, stringSize);
 
-		index.emplace(str, ID);
+		index.emplace(term, termId);
 	}
 	
-	p.set_value(index);
+	promise.set_value(index);
 
 }
 
-void readLinkIndex(const std::string& filePath,
-	std::promise<std::unordered_map<unsigned long, std::string >>&& p) {
+void readDocDict(const std::string& path,
+	std::promise<std::unordered_map<unsigned long, std::string >>&& promise) {
 
-	std::ifstream in(filePath, std::ifstream::binary);
+	std::ifstream file(path, std::ifstream::binary);
 
-	if (!in) {
-		p.set_value(std::unordered_map<unsigned long, std::string>());
+	if (!file) {
+		promise.set_value(std::unordered_map<unsigned long, std::string>());
 		return;
 	}
 
 	unsigned int indexSize = 0;
 
-	in.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
+	file.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
 
 	std::unordered_map<unsigned long, std::string> index;
 
@@ -158,95 +185,141 @@ void readLinkIndex(const std::string& filePath,
 
 	for (int i = 0; i < indexSize; i++) {
 
-		unsigned long ID = 0;
+		unsigned long docId = 0;
 
-		in.read(reinterpret_cast<char*>(&ID), sizeof(ID));
+		file.read(reinterpret_cast<char*>(&docId), sizeof(docId));
 
-		short stringSize = 0;
+		unsigned short stringSize = 0;
 
-		in.read(reinterpret_cast<char*>(&stringSize), sizeof(stringSize));
+		file.read(reinterpret_cast<char*>(&stringSize), sizeof(stringSize));
 
 		char* cString = new char[stringSize];
 
-		in.read(cString, stringSize);
+		file.read(cString, stringSize);
 
-		std::string link(cString, stringSize);
+		std::string doc(cString, stringSize);
 
-		index.emplace(ID, link);
+		index.emplace(docId, doc);
 	}
 
-	p.set_value(index);
+	promise.set_value(index);
 }
 
-std::unordered_map<unsigned long, std::vector<unsigned long>> readWordLinkIndex(const std::string& filePath) {
+std::unordered_map<unsigned long, std::vector<unsigned long>> readIndex(const std::string& path) {
 
-	std::ifstream in("wordDocIndex.bin", std::ifstream::binary | std::ifstream::ate); // open file with pointer to end
+	std::ifstream file(path, std::ifstream::binary | std::ifstream::ate); // open file with file pointer pointing to end
 
-	if (!in) {
+	if (!file) {
 		return std::unordered_map<unsigned long, std::vector<unsigned long>>();
 	}
 
 	short sizeOfInt = sizeof(int);
 
-	in.seekg(-sizeOfInt, std::ios::end); // point to start of last 4 bytes 
+	file.seekg(-sizeOfInt, std::ios::end); // point to start of last 4 bytes 
 
 	int indexSize = 0;
 
-	in.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
+	file.read(reinterpret_cast<char*>(&indexSize), sizeof(indexSize));
 
-	in.clear();
+	file.clear(); // remove signal that prevents further reads.
 
-	in.seekg(0);
+	file.seekg(0); // set file pointer to beginning of file.
 
 	std::unordered_map<unsigned long, std::vector<unsigned long>> index;
 
-	index.reserve(sizeOfInt);
+	index.reserve(indexSize);
 
 	for (int i = 0; i < indexSize; i++) {
 
-		unsigned long wordID = 0;
+		unsigned long termId = 0;
 
-		in.read(reinterpret_cast<char*>(&wordID), sizeof(wordID));
+		file.read(reinterpret_cast<char*>(&termId), sizeof(termId));
 
-		int listSize = 0;
+		unsigned int docListSize = 0;
 
-		in.read(reinterpret_cast<char*>(&listSize), sizeof(listSize));
+		file.read(reinterpret_cast<char*>(&docListSize), sizeof(docListSize));
 
-		std::vector<unsigned long> docIDs(listSize);
+		std::vector<unsigned long> docIdList(docListSize);
 
-		in.read(reinterpret_cast<char*>(&docIDs[0]), sizeof(long) * listSize);
+		file.read(reinterpret_cast<char*>(docIdList.data()), sizeof(docIdList[0]) * docListSize);
 
-		index.emplace(wordID, docIDs);
+		index.emplace(termId, docIdList);
 	}
 
 	return index;
 }
 
+void transformLower(std::string& word) {
+	std::transform(
+		word.begin(), word.end(),
+		word.begin(), [](char letter)
+	{ return tolower(letter); });
+}
+
+std::vector<std::string> getTermList(const std::string& query) {
+	std::istringstream ss(query);
+	std::istream_iterator<std::string> start(ss), end;
+	return std::vector<std::string>(start, end);
+}
+
 std::vector<unsigned long> getIntersection(const std::vector<unsigned long>& first, const std::vector<unsigned long>& second) {
 
-	std::vector<unsigned long> intersection;
+	std::vector<unsigned long> res;
 
-	intersection.reserve(
+	res.reserve(
 		std::min(first.size(), second.size())
 	);
 
 	std::set_intersection(
 		first.begin(), first.end(),
 		second.begin(), second.end(),
-		std::back_inserter(intersection)
+		std::back_inserter(res)
 	);
 
-	return intersection;
+	return res;
+}
+
+
+std::vector<std::vector<unsigned long>> getDocIdLists(std::vector<std::string> termList,
+	const std::unordered_map<std::string, unsigned long>& termDict,
+	const std::unordered_map<unsigned long, std::vector<unsigned long>>& index ) {
+
+	std::vector<std::vector<unsigned long>> docIdLists;
+
+	for (auto term : termList) {
+
+		auto termSeach = termDict.find(term);
+
+		if (termSeach != termDict.end()) {
+			
+			auto indexSearch = index.find(termSeach->second);
+
+			docIdLists.push_back(indexSearch->second);
+		}
+	}
+
+	return docIdLists;
 
 }
 
-std::unordered_map<unsigned long, std::string> reverseIndex(const std::unordered_map<std::string, unsigned long>& index) {
+std::vector<unsigned long> mergeDocIdList(const std::vector<std::vector<unsigned long>>& docIdLists) {
 
-	std::unordered_map<unsigned long, std::string> reverse;
-	reverse.reserve(index.size());
+	std::vector<unsigned long> res(docIdLists.at(0));
 
-	for (const auto& pair : index) { reverse.emplace(pair.second, pair.first); }
+	for (int i = 1; i < docIdLists.size(); i++) {
+		res = getIntersection(res, docIdLists[i]);
+	}
 
-	return reverse;
+	return res;
+}
 
+void printResults(const std::vector<unsigned long>& results, 
+	const std::unordered_map<unsigned long, std::string>& docDict) {
+
+	std::transform(
+		results.begin(), results.end(),
+		std::ostream_iterator<std::string>(std::cout, "\n"),
+		[&docDict](unsigned long docId) {
+		return docDict.at(docId); }
+	);
 }
